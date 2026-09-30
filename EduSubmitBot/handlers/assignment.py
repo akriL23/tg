@@ -212,15 +212,22 @@ async def show_submission(message: Message, state: FSMContext, session):
             await message.answer(caption)
     else:
         await message.answer(caption)
-    # Offer navigation
+    # Offer navigation and actions
     from aiogram.utils.keyboard import InlineKeyboardBuilder
     builder = InlineKeyboardBuilder()
     if index > 0:
         builder.button(text="◀️ Предыдущая", callback_data=f"sub_prev:{index}")
     if index < len(submissions_ids) - 1:
         builder.button(text="Следующая ▶️", callback_data=f"sub_next:{index}")
+    # Actions
+    builder.button(text="✅ Принять", callback_data=f"sub_accept:{sub_id}")
+    builder.button(text="✏️ Доработать", callback_data=f"sub_rework:{sub_id}")
+    builder.button(text="❌ Отклонить", callback_data=f"sub_reject:{sub_id}")
+    builder.button(text="💬 Комментарий", callback_data=f"sub_comment:{sub_id}")
+    builder.button(text="📥 Скачать все файлы", callback_data=f"sub_download_all:{sub_id}")
     builder.button(text="Закрыть", callback_data="sub_close")
-    await message.answer("Навигация:", reply_markup=builder.as_markup())
+    builder.adjust(2)  # navigation in row, then actions
+    await message.answer("Действия:", reply_markup=builder.as_markup())
 
 @router.callback_query(F.data.startswith("sub_prev:"))
 async def process_sub_prev(callback: CallbackQuery, state: FSMContext):
@@ -253,6 +260,86 @@ async def process_sub_close(callback: CallbackQuery, state: FSMContext):
     await state.clear()
     await callback.message.answer("Просмотр сдач завершён.")
     await callback.answer()
+
+# ---------- Teacher actions ----------
+@router.callback_query(F.data.startswith("sub_accept:"))
+async def process_sub_accept(callback: CallbackQuery, state: FSMContext):
+    submission_id = int(callback.data.split(":")[1])
+    async with async_session() as session:
+        from services.assignment import update_submission_status_and_comment
+        await update_submission_status_and_comment(session, submission_id, "accepted", None)
+        await callback.answer("Сдача принята")
+        # Refresh view
+        await show_submission(callback.message, state, session)
+
+@router.callback_query(F.data.startswith("sub_rework:"))
+async def process_sub_rework(callback: CallbackQuery, state: FSMContext):
+    submission_id = int(callback.data.split(":")[1])
+    async with async_session() as session:
+        from services.assignment import update_submission_status_and_comment
+        await update_submission_status_and_comment(session, submission_id, "needs_rework", None)
+        await callback.answer("Отправлено на доработку")
+        await show_submission(callback.message, state, session)
+
+@router.callback_query(F.data.startswith("sub_reject:"))
+async def process_sub_reject(callback: CallbackQuery, state: FSMContext):
+    submission_id = int(callback.data.split(":")[1])
+    async with async_session() as session:
+        from services.assignment import update_submission_status_and_comment
+        await update_submission_status_and_comment(session, submission_id, "rejected", None)
+        await callback.answer("Сдача отклонена")
+        await show_submission(callback.message, state, session)
+
+# Comment input FSM
+class CommentStates(StatesGroup):
+    waiting_for_comment = State()
+
+@router.callback_query(F.data.startswith("sub_comment:"))
+async def process_sub_comment(callback: CallbackQuery, state: FSMContext):
+    submission_id = int(callback.data.split(":")[1])
+    await state.update_data(submission_id=submission_id)
+    await callback.message.answer("Введите комментарий к сдаче:")
+    await state.set_state(CommentStates.waiting_for_comment)
+    await callback.answer()
+
+@router.message(CommentStates.waiting_for_comment)
+async def process_comment_input(message: Message, state: FSMContext):
+    data = await state.get_data()
+    submission_id = data.get('submission_id')
+    comment = message.text
+    async with async_session() as session:
+        from services.assignment import update_submission_status_and_comment
+        # Keep current status, just update comment
+        submission = await session.get(Submission, submission_id)
+        await update_submission_status_and_comment(session, submission_id, submission.status, comment)
+        await message.answer("Комментарий сохранён")
+        await state.clear()
+        # Refresh view
+        await show_submission(message, state, session)
+
+# Download all files
+@router.callback_query(F.data.startswith("sub_download_all:"))
+async def process_sub_download_all(callback: CallbackQuery, state: FSMContext):
+    submission_id = int(callback.data.split(":")[1])
+    async with async_session() as session:
+        from services.assignment import get_submission_files
+        files = await get_submission_files(session, submission_id)
+        if not files:
+            await callback.answer("Нет файлов для скачивания")
+            return
+        # Send each file (limit to 5 to avoid flooding)
+        for f in files[:5]:
+            try:
+                await callback.message.bot.send_document(
+                    chat_id=callback.message.chat.id,
+                    document=f.file_id,
+                    caption=f"{f.file_name} (v{f.version})"
+                )
+            except Exception:
+                pass
+        if len(files) > 5:
+            await callback.message.answer(f"И ещё {len(files)-5} файлов (ограничение отображения).")
+        await callback.answer("Файлы отправлены")
 
 def register_handlers(dp):
     dp.include_router(router)
