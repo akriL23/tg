@@ -10,6 +10,10 @@ class UserRole(Enum):
     TEACHER = "teacher"
     STUDENT = "student"
 
+class MemberRole(Enum):
+    TEACHER = "teacher"
+    STUDENT = "student"
+
 class User(Base):
     __tablename__ = 'users'
     id = Column(Integer, primary_key=True, index=True)
@@ -33,7 +37,7 @@ class GroupMember(Base):
     id = Column(Integer, primary_key=True, index=True)
     group_id = Column(Integer, ForeignKey('groups.id'))
     user_id = Column(Integer, ForeignKey('users.id'))
-    role = Column(String)  # teacher, student
+    role = Column(Enum(MemberRole))
 
 class Assignment(Base):
     __tablename__ = 'assignments'
