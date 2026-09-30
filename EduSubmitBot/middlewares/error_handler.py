@@ -15,8 +15,22 @@ class ErrorHandlerMiddleware(BaseMiddleware):
         try:
             return await handler(event, data)
         except Exception as exc:
-            # Log the exception with details
-            logger.exception("Exception in update processing: %s", exc)
+            # Extract user context for logging
+            user_id = None
+            chat_id = None
+            state = data.get('state')
+            if hasattr(event, 'message') and event.message:
+                user_id = event.message.from_user.id if event.message.from_user else None
+                chat_id = event.message.chat.id
+            elif hasattr(event, 'callback_query') and event.callback_query:
+                user_id = event.callback_query.from_user.id if event.callback_query.from_user else None
+                chat_id = event.callback_query.message.chat.id if event.callback_query.message else None
+
+            # Log the exception with user context
+            logger.exception(
+                "Exception in update processing: user_id=%s, chat_id=%s, state=%s, error=%s",
+                user_id, chat_id, state, exc
+            )
             # Optionally notify admin or user
             # For now, we just let the exception propagate?
             # We'll swallow and send a generic message to user if possible.

@@ -1,13 +1,18 @@
+import logging
 from aiogram import Router, F
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import Message
 from services.user import get_or_create_user, set_user_role, get_user, get_active_assignments_for_student, create_submission, get_submission_by_id, add_submission_file_version
+from services.assignment import get_submission_files
 from services.assignment import get_assignment_by_id
-from services.group import get_groups_by_teacher
+from services.group import get_groups_by_teacher, get_group_by_id
 from database.db import async_session
 from keyboards.main_menu import get_main_keyboard
+from database.models import UserRole, MemberRole
+
+logger = logging.getLogger(__name__)
 
 router = Router()
 
@@ -24,12 +29,22 @@ async def cmd_start(message: Message):
             message.from_user.full_name,
             message.from_user.username or ""
         )
-    if user.role == "admin":
-        await message.answer("Вы вошли как администратор бота.\nДоступные команды: /create_group, /help", reply_markup=get_main_keyboard(user.role))
-    elif user.role == "teacher":
-        await message.answer("Вы вошли как преподаватель.\nДоступные команды: /my_groups, /new_assignment, /submissions, /help", reply_markup=get_main_keyboard(user.role))
+        # Debug: print role
+        print(f"DEBUG: user {user.telegram_id} role from DB: {user.role}")
+    if user.role == UserRole.TEACHER:
+        await message.answer(
+            "Вы вошли как преподаватель.\n"
+            "Доступные команды: /my_groups, /create_group, /delete_group, /new_assignment, /delete_assignment, /submissions, /help",
+            reply_markup=get_main_keyboard(user.role.value)
+        )
+    elif user.role == UserRole.ADMIN:
+        await message.answer(
+            "Вы вошли как администратор.\n"
+            "Доступные команды: /list_all, /stats, /admin, /create_group, /delete_group, /help",
+            reply_markup=get_main_keyboard(user.role.value)
+        )
     else:
-        await message.answer("Вы вошли как студент.\nДля присоединения к группе используйте инвайт-код: /join <code>\nИли перейдите по ссылке-приглашению.\n/help для списка команд.", reply_markup=get_main_keyboard(user.role))
+        await message.answer("Вы вошли как студент.\nДля присоединения к группе используйте инвайт-код: /join <code>\nИли перейдите по ссылке-приглашению.\n/help для списка команд.", reply_markup=get_main_keyboard(user.role.value))
 
 @router.message(Command("help"))
 async def cmd_help(message: Message):
@@ -40,22 +55,22 @@ async def cmd_help(message: Message):
 /menu - показать главное меню (кнопки)
 
 Для администратора:
-/create_group <название> - создать новую группу
-/delete_group <ID> - удалить группу
+/create_group - создать новую группу (интерактивно)
+/delete_group - удалить группу (интерактивно)
 /list_all - показать все группы и задания
-/stats - статистика бота (заглушка)
+/stats - статистика бота
 
 Для преподавателя:
 /my_groups - список моих групп
-/new_assignment - создать новое задание
-/delete_assignment <ID> - удалить задание
-/submissions - просмотр сдач (в разработке)
+/new_assignment - создать новое задание (интерактивно)
+/delete_assignment - удалить задание (интерактивно)
+/submissions - просмотр и оценка сдач
 
 Для студента:
 /join <код> - присоединиться к группе по инвайт-коду
 /register_student - регистрация через FSM (фамилия, имя, группа)
 /my_assignments - мои активные задания
-/my_submissions - мои сдачи (в разработке)
+/my_submissions - мои сдачи
 """
     await message.answer(help_text)
 
@@ -90,9 +105,71 @@ async def cmd_menu(message: Message):
     async with async_session() as session:
         user = await get_user(session, message.from_user.id)
         if user:
-            await message.answer("Главное меню:", reply_markup=get_main_keyboard(user.role))
+            await message.answer("Главное меню:", reply_markup=get_main_keyboard(user.role.value))
         else:
             await message.answer("Сначала выполните /start для регистрации.")
+
+# Reply keyboard button handlers
+@router.message(F.text == "Создать группу")
+async def btn_create_group(message: Message, state: FSMContext):
+    from handlers.group import cmd_create_group
+    await cmd_create_group(message, state)
+
+@router.message(F.text == "Мои группы")
+async def btn_my_groups(message: Message):
+    from handlers.group import cmd_my_groups
+    await cmd_my_groups(message)
+
+@router.message(F.text == "Удалить группу")
+async def btn_delete_group(message: Message, state: FSMContext):
+    from handlers.group import cmd_delete_group
+    await cmd_delete_group(message, state)
+
+@router.message(F.text == "Создать задание")
+async def btn_new_assignment(message: Message, state: FSMContext):
+    from handlers.assignment import cmd_new_assignment
+    await cmd_new_assignment(message, state)
+
+@router.message(F.text == "Удалить задание")
+async def btn_delete_assignment(message: Message, state: FSMContext):
+    from handlers.assignment import cmd_delete_assignment
+    await cmd_delete_assignment(message, state)
+
+@router.message(F.text == "Посмотреть сдачи")
+async def btn_submissions(message: Message, state: FSMContext):
+    from handlers.assignment import cmd_submissions
+    await cmd_submissions(message, state)
+
+@router.message(F.text == "Панель админа")
+async def btn_admin_panel(message: Message):
+    from handlers.admin import cmd_admin_menu
+    await cmd_admin_menu(message)
+
+@router.message(F.text == "Список всего")
+async def btn_list_all(message: Message):
+    from handlers.admin import cmd_list_all
+    await cmd_list_all(message)
+
+@router.message(F.text == "Статистика")
+async def btn_stats(message: Message):
+    from handlers.admin import cmd_stats
+    await cmd_stats(message)
+
+@router.message(F.text == "Помощь")
+async def btn_help(message: Message):
+    await cmd_help(message)
+
+@router.message(F.text == "Мои задания")
+async def btn_my_assignments(message: Message, state: FSMContext):
+    await cmd_my_assignments(message, state)
+
+@router.message(F.text == "Мои сдачи")
+async def btn_my_submissions(message: Message, state: FSMContext):
+    await cmd_my_submissions(message, state)
+
+@router.message(F.text == "Присоединиться к группе")
+async def btn_join(message: Message):
+    await message.answer("Отправьте инвайт-код в формате: /join <код>")
 
 # Registration FSM (placeholder)
 class RegistrationStates(StatesGroup):
@@ -141,7 +218,7 @@ class AssignmentStates(StatesGroup):
 async def cmd_my_assignments(message: Message, state: FSMContext):
     async with async_session() as session:
         user = await get_user(session, message.from_user.id)
-        if not user or user.role != "student":
+        if not user or user.role != UserRole.STUDENT:
             await message.answer("Эта команда доступна только студентам.")
             return
         assignments = await get_active_assignments_for_student(session, user.id)
@@ -217,6 +294,15 @@ async def process_file_submission(message: Message, state: FSMContext):
     if not file_id:
         await message.answer("Не удалось получить файл. Попробуйте ещё раз.")
         return
+    # Check file size
+    from config import load_config
+    config = load_config()
+    if file_size and file_size > config.max_file_size:
+        await message.answer(
+            f"Файл слишком большой ({file_size // (1024*1024)} МБ). "
+            f"Максимальный размер: {config.max_file_size // (1024*1024)} МБ."
+        )
+        return
     data = await state.get_data()
     assignment_id = data.get('assignment_id')
     async with async_session() as session:
@@ -224,7 +310,7 @@ async def process_file_submission(message: Message, state: FSMContext):
         from sqlalchemy import select
         from database.models import Submission
         result = await session.execute(
-            select(Submission).where(Submission.assignment_id == assignment_id, Subession.user_id == message.from_user.id)
+            select(Submission).where(Submission.assignment_id == assignment_id, Submission.user_id == message.from_user.id)
         )
         existing = result.scalar_one_or_none()
         if existing:
@@ -235,22 +321,36 @@ async def process_file_submission(message: Message, state: FSMContext):
             # Create new submission
             submission = await create_submission(session, assignment_id, message.from_user.id, file_id, file_name, file_size)
             await message.answer(f"Работа сдана! ID сдачи: {submission.id}")
-        # Notify teacher if needed
-        from config import load_config
+        # Notify teacher if enabled
         config = load_config()
-        if getattr(config, 'notify_teacher_on_submit', False):
-            # Get assignment to get group and teacher
+        if config.notify_teacher_on_submit:
             assignment = await get_assignment_by_id(session, assignment_id)
             if assignment:
-                # TODO: send notification to teacher
-                pass
+                # Get teacher from group
+                from services.group import get_group_by_id
+                group = await get_group_by_id(session, assignment.group_id)
+                if group:
+                    teacher = await get_user(session, group.teacher_id)
+                    if teacher:
+                        try:
+                            student = await get_user(session, message.from_user.id)
+                            student_name = student.full_name if student else f"ID:{message.from_user.id}"
+                            await message.bot.send_message(
+                                chat_id=teacher.telegram_id,
+                                text=f"📥 Новая сдача задания «{assignment.title}»\n"
+                                     f"Студент: {student_name}\n"
+                                     f"Группа: {group.title}\n"
+                                     f"Время: {submission.submitted_at.strftime('%d.%m.%Y %H:%M')}"
+                            )
+                        except Exception as e:
+                            logger.warning(f"Failed to notify teacher {teacher.telegram_id}: {e}")
     await state.clear()
 
 @router.message(Command("my_submissions"))
 async def cmd_my_submissions(message: Message, state: FSMContext):
     async with async_session() as session:
         user = await get_user(session, message.from_user.id)
-        if not user or user.role != "student":
+        if not user or user.role != UserRole.STUDENT:
             await message.answer("Эта команда доступна только студентам.")
             return
         # Get submissions of student
@@ -293,8 +393,6 @@ async def process_submission_view(message: Message, state: FSMContext):
     async with async_session() as session:
         # reload submission with relations
         submission = await session.get(Submission, submission.id)
-        files = []
-        from services.user import get_submission_files
         files = await get_submission_files(session, submission.id)
         caption = (
             f"Сдача #{submission.id}\n"

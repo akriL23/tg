@@ -107,51 +107,45 @@ async def send_reminder(assignment_id: int, student_id: int, days_left: int):
         except Exception as e:
             logger.error(f"Failed to send reminder to student {student_id}: {e}")
 
-def load_pending_reminders():
+async def load_pending_reminders():
     """Load pending reminders from DB and schedule them."""
-    # This should be called after scheduler is started and bot is available.
-    # We'll call it from init_scheduler after setting scheduler._bot.
-    import asyncio
-    async def _load():
-        async with async_session() as session:
-            result = await session.execute(select(Reminder).where(Reminder.sent == False))
-            reminders = result.scalars().all()
-            for rem in reminders:
-                # get assignment and student to compute days_left
-                assign = await session.get(Assignment, rem.assignment_id)
-                stud = await session.get(User, rem.user_id)
-                if not assign or not stud:
-                    continue
-                # compute days_left based on reminder time
-                now = datetime.now(pytz.UTC)
-                delta = rem.remind_at - now
-                days_left = max(0, int(delta.total_seconds() / 86400))
-                if days_left < 0:
-                    # already passed, mark sent?
-                    continue
-                # schedule job
-                scheduler.add_job(
-                    send_reminder,
-                    trigger=DateTrigger(run_date=rem.remind_at),
-                    args=[rem.assignment_id, rem.user_id, days_left],
-                    id=f"rem_{rem.assignment_id}_{rem.user_id}_{int(rem.remind_at.timestamp())}",
-                    replace_existing=True
-                )
-                logger.info(f"Rescheduled reminder ID {rem.id} for assignment {rem.assignment_id} user {rem.user_id}")
-    # We need to run async function; but init_scheduler is sync. We'll store loop to run later.
-    # For simplicity, we'll call asyncio.create_task if loop running.
-    try:
-        loop = asyncio.get_running_loop()
-        loop.create_task(_load())
-    except RuntimeError:
-        # no running loop, we'll schedule later via init_scheduler after bot start? We'll just log.
-        logger.warning("No running event loop to load pending reminders; will load on first update.")
+    async with async_session() as session:
+        result = await session.execute(select(Reminder).where(Reminder.sent == False))
+        reminders = result.scalars().all()
+        for rem in reminders:
+            # get assignment and student to compute days_left
+            assign = await session.get(Assignment, rem.assignment_id)
+            stud = await session.get(User, rem.user_id)
+            if not assign or not stud:
+                continue
+            # compute days_left based on reminder time
+            now = datetime.now(pytz.UTC)
+            delta = rem.remind_at - now
+            days_left = max(0, int(delta.total_seconds() / 86400))
+            if days_left < 0:
+                # already passed, mark sent?
+                continue
+            # schedule job
+            scheduler.add_job(
+                send_reminder,
+                trigger=DateTrigger(run_date=rem.remind_at),
+                args=[rem.assignment_id, rem.user_id, days_left],
+                id=f"rem_{rem.assignment_id}_{rem.user_id}_{int(rem.remind_at.timestamp())}",
+                replace_existing=True
+            )
+            logger.info(f"Rescheduled reminder ID {rem.id} for assignment {rem.assignment_id} user {rem.user_id}")
 
 def init_scheduler(bot):
     scheduler._bot = bot
     scheduler.start()
     # Load pending reminders
-    load_pending_reminders()
+    import asyncio
+    try:
+        loop = asyncio.get_running_loop()
+        loop.create_task(load_pending_reminders())
+    except RuntimeError:
+        # no running loop, run in new loop
+        asyncio.run(load_pending_reminders())
     logger.info("Scheduler started")
 
 def shutdown_scheduler():

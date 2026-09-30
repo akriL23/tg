@@ -76,6 +76,44 @@ async def cmd_admin_menu(message: Message):
         return
     await message.answer("Панель администратора:", reply_markup=admin_main_keyboard())
 
+@router.message(Command("list_all"))
+async def cmd_list_all(message: Message):
+    if not await check_admin(message):
+        await message.answer("Доступ запрещён.")
+        return
+    async with async_session() as session:
+        groups = await get_all_groups(session)
+        assignments = await get_all_assignments(session)
+    text = "📚 Все группы:\n"
+    if groups:
+        for g in groups:
+            text += f"• {g.title} (ID:{g.id})\n"
+    else:
+        text += "Нет групп.\n"
+    text += "\n📝 Все задания:\n"
+    if assignments:
+        for a in assignments:
+            text += f"• {a.title} (ID:{a.id}) в группе ID:{a.group_id}\n"
+    else:
+        text += "Нет заданий.\n"
+    await message.answer(text)
+
+@router.message(Command("stats"))
+async def cmd_stats(message: Message):
+    if not await check_admin(message):
+        await message.answer("Доступ запрещён.")
+        return
+    async with async_session() as session:
+        stats = await get_stats(session)
+    text = (
+        "📊 Статистика бота:\n"
+        f"👥 Пользователей: {stats['users']}\n"
+        f"👥 Групп: {stats['groups']}\n"
+        f"📝 Заданий: {stats['assignments']}\n"
+        f"✅ Сдач: {stats['submissions']}\n"
+    )
+    await message.answer(text)
+
 @router.callback_query(F.data == "adm_del_group")
 async def adm_del_group_cb(callback: CallbackQuery, state: FSMContext):
     if not await check_admin(callback.message):
@@ -98,7 +136,8 @@ async def adm_del_assignment_cb(callback: CallbackQuery, state: FSMContext):
     if not await check_admin(callback.message):
         await callback.answer("Доступ запрещён.", show_alert=True)
         return
-    assignments = await get_all_assignments(await get_session())
+    async with async_session() as session:
+        assignments = await get_all_assignments(session)
     if not assignments:
         await callback.message.edit_text("Заданий нет.")
         await callback.answer()

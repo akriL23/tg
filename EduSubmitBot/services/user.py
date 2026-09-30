@@ -10,9 +10,16 @@ async def get_or_create_user(session: AsyncSession, telegram_id: int, full_name:
     user = result.scalar_one_or_none()
     if user:
         # update name/username if changed
+        updated = False
         if user.full_name != full_name or user.username != username:
             user.full_name = full_name
             user.username = username
+            updated = True
+        # update role if user is in admin_ids but doesn't have admin role
+        if telegram_id in config.admin_ids and user.role.value != 'admin':
+            user.role = 'admin'
+            updated = True
+        if updated:
             await session.commit()
         return user
     # new user

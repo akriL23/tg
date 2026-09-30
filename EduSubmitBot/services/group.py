@@ -1,8 +1,8 @@
 import secrets
 import string
-from sqlalchemy import select
+from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
-from database.models import Group, User
+from database.models import Group, User, GroupMember, Assignment, Submission, SubmissionFile, Reminder
 
 def generate_invite_code(length=8):
     alphabet = string.ascii_uppercase + string.digits
@@ -33,3 +33,33 @@ async def get_group_by_code(session: AsyncSession, invite_code: str):
 async def get_group_by_id(session: AsyncSession, group_id: int):
     result = await session.execute(select(Group).where(Group.id == group_id))
     return result.scalar_one_or_none()
+
+async def delete_group(session: AsyncSession, group_id: int):
+    """Delete a group and all related data (assignments, submissions, members, reminders)."""
+    # Delete reminders for assignments in this group
+    await session.execute(
+        delete(Reminder).where(Reminder.assignment_id.in_(
+            select(Assignment.id).where(Assignment.group_id == group_id)
+        ))
+    )
+    # Delete submission files for submissions in this group's assignments
+    await session.execute(
+        delete(SubmissionFile).where(SubmissionFile.submission_id.in_(
+            select(Submission.id).where(Submission.assignment_id.in_(
+                select(Assignment.id).where(Assignment.group_id == group_id)
+            ))
+        ))
+    )
+    # Delete submissions for assignments in this group
+    await session.execute(
+        delete(Submission).where(Submission.assignment_id.in_(
+            select(Assignment.id).where(Assignment.group_id == group_id)
+        ))
+    )
+    # Delete assignments in this group
+    await session.execute(delete(Assignment).where(Assignment.group_id == group_id))
+    # Delete group members
+    await session.execute(delete(GroupMember).where(GroupMember.group_id == group_id))
+    # Delete the group itself
+    await session.execute(delete(Group).where(Group.id == group_id))
+    await session.commit()

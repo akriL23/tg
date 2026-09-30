@@ -2,15 +2,19 @@ from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey, T
 from sqlalchemy.orm import relationship
 from sqlalchemy.ext.declarative import declarative_base
 import datetime
+from enum import Enum as PyEnum
 
 Base = declarative_base()
 
-class UserRole(Enum):
+def utcnow():
+    return datetime.datetime.now(datetime.timezone.utc)
+
+class UserRole(PyEnum):
     ADMIN = "admin"
     TEACHER = "teacher"
     STUDENT = "student"
 
-class MemberRole(Enum):
+class MemberRole(PyEnum):
     TEACHER = "teacher"
     STUDENT = "student"
 
@@ -20,9 +24,9 @@ class User(Base):
     telegram_id = Column(BigInteger, unique=True, index=True)
     full_name = Column(String)
     username = Column(String)
-    role = Column(Enum(UserRole), default=UserRole.STUDENT)
+    role = Column(Enum(UserRole, values_callable=lambda obj: [e.value for e in obj]), default=UserRole.STUDENT)
     timezone = Column(String, default='UTC')
-    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    created_at = Column(DateTime(timezone=True), default=utcnow)
 
 class Group(Base):
     __tablename__ = 'groups'
@@ -30,14 +34,14 @@ class Group(Base):
     title = Column(String)
     invite_code = Column(String, unique=True, index=True)
     teacher_id = Column(Integer, ForeignKey('users.id'))
-    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    created_at = Column(DateTime(timezone=True), default=utcnow)
 
 class GroupMember(Base):
     __tablename__ = 'group_members'
     id = Column(Integer, primary_key=True, index=True)
     group_id = Column(Integer, ForeignKey('groups.id'))
     user_id = Column(Integer, ForeignKey('users.id'))
-    role = Column(Enum(MemberRole))
+    role = Column(Enum(MemberRole, values_callable=lambda obj: [e.value for e in obj]))
 
 class Assignment(Base):
     __tablename__ = 'assignments'
@@ -46,17 +50,17 @@ class Assignment(Base):
     title = Column(String)
     description = Column(Text)
     file_id = Column(String, nullable=True)  # Telegram file_id
-    deadline = Column(DateTime)
+    deadline = Column(DateTime(timezone=True))
     allow_late = Column(Boolean, default=False)
     created_by = Column(Integer, ForeignKey('users.id'))
-    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    created_at = Column(DateTime(timezone=True), default=utcnow)
 
 class Submission(Base):
     __tablename__ = 'submissions'
     id = Column(Integer, primary_key=True, index=True)
     assignment_id = Column(Integer, ForeignKey('assignments.id'))
     user_id = Column(Integer, ForeignKey('users.id'))
-    submitted_at = Column(DateTime, default=datetime.datetime.utcnow)
+    submitted_at = Column(DateTime(timezone=True), default=utcnow)
     is_late = Column(Boolean, default=False)
     status = Column(String, default='submitted')  # submitted, accepted, needs_rework, rejected
     teacher_comment = Column(Text, nullable=True)
@@ -75,5 +79,5 @@ class Reminder(Base):
     id = Column(Integer, primary_key=True, index=True)
     assignment_id = Column(Integer, ForeignKey('assignments.id'))
     user_id = Column(Integer, ForeignKey('users.id'))
-    remind_at = Column(DateTime)
+    remind_at = Column(DateTime(timezone=True))
     sent = Column(Boolean, default=False)

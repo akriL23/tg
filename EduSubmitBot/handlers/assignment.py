@@ -3,7 +3,8 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import Message, CallbackQuery, InputFile
-from services.assignment import create_assignment, get_students_in_group, get_assignments_by_teacher, get_submissions_by_assignment, get_submission_files
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+from services.assignment import create_assignment, get_students_in_group, get_assignments_by_teacher, get_submissions_by_assignment, get_submission_files, delete_assignment
 from services.group import get_groups_by_teacher
 from services.user import get_user
 from database.db import async_session
@@ -15,7 +16,11 @@ router = Router()
 class NewAssignment(StatesGroup):
     waiting_for_group = State()
     waiting_for_file = State()
+    waiting_for_deadline = State()
     waiting_for_confirmation = State()  # optional
+
+class DeleteAssignment(StatesGroup):
+    waiting_for_confirmation = State()
 
 class SubmissionView(StatesGroup):
     waiting_for_assignment = State()
@@ -25,7 +30,7 @@ class SubmissionView(StatesGroup):
 async def cmd_new_assignment(message: Message, state: FSMContext):
     async with async_session() as session:
         user = await get_user(session, message.from_user.id)
-        if not user or user.role not in ("teacher", "admin"):
+        if not user or user.role.value not in ("teacher", "admin"):
             await message.answer("Только преподаватели и администраторы могут создавать задания.")
             return
         groups = await get_groups_by_teacher(session, user.id)
@@ -65,26 +70,63 @@ async def process_group_select(message: Message, state: FSMContext):
 async def process_file_received(message: Message, state: FSMContext):
     # Get file_id
     file_id = None
+    file_size = 0
     if message.document:
         file_id = message.document.file_id
+        file_size = message.document.file_size or 0
     elif message.photo:
         file_id = message.photo[-1].file_id
+        file_size = message.photo[-1].file_size or 0
     elif message.video:
         file_id = message.video.file_id
+        file_size = message.video.file_size or 0
     elif message.audio:
         file_id = message.audio.file_id
+        file_size = message.audio.file_size or 0
     elif message.voice:
         file_id = message.voice.file_id
+        file_size = message.voice.file_size or 0
     if not file_id:
         await message.answer("Не удалось получить файл. Попробуйте ещё раз.")
         return
+    # Check file size
+    from config import load_config
+    config = load_config()
+    if file_size > config.max_file_size:
+        await message.answer(
+            f"Файл слишком большой ({file_size // (1024*1024)} МБ). "
+            f"Максимальный размер: {config.max_file_size // (1024*1024)} МБ."
+        )
+        return
     await state.update_data(file_id=file_id)
-    # Auto deadline: now + 7 days
-    deadline = datetime.utcnow() + timedelta(days=7)
-    await state.update_data(deadline=deadline.isoformat())
-    # Ask confirmation
+    # Ask for deadline
     await message.answer(
-        f"Файл получен.\nДедлайн установлен автоматически на 7 дней от сейчас: {deadline.strftime('%d.%m.%Y %H:%M')} UTC.\n"
+        "Файл получен.\n"
+        "Введите дедлайн в формате: <b>ДД.ММ.ГГГГ ЧЧ:ММ</b> (например, 25.12.2024 23:59)\n"
+        "Или отправьте «пропуск» для автоматического дедлайна через 7 дней.",
+        parse_mode="HTML"
+    )
+    await state.set_state(NewAssignment.waiting_for_deadline)
+
+@router.message(NewAssignment.waiting_for_deadline)
+async def process_deadline_input(message: Message, state: FSMContext):
+    text = message.text.strip().lower()
+    if text in ("пропуск", "skip", "auto", "авто"):
+        deadline = datetime.utcnow() + timedelta(days=7)
+    else:
+        try:
+            # Parse DD.MM.YYYY HH:MM
+            deadline = datetime.strptime(text, "%d.%m.%Y %H:%M")
+        except ValueError:
+            await message.answer(
+                "Неверный формат даты. Используйте <b>ДД.ММ.ГГГГ ЧЧ:ММ</b> (например, 25.12.2024 23:59)\n"
+                "Или отправьте «пропуск» для автоматического дедлайна через 7 дней.",
+                parse_mode="HTML"
+            )
+            return
+    await state.update_data(deadline=deadline.isoformat())
+    await message.answer(
+        f"Дедлайн установлен: {deadline.strftime('%d.%m.%Y %H:%M')} UTC.\n"
         "Подтвердить создание задания? (Да/Нет)"
     )
     await state.set_state(NewAssignment.waiting_for_confirmation)
@@ -133,7 +175,7 @@ async def process_confirm_no(message: Message, state: FSMContext):
 async def cmd_submissions(message: Message, state: FSMContext):
     async with async_session() as session:
         user = await get_user(session, message.from_user.id)
-        if not user or user.role not in ("teacher", "admin"):
+        if not user or user.role.value not in ("teacher", "admin"):
             await message.answer("Только преподаватели и администраторы могут просматривать сдачи.")
             return
         assignments = await get_assignments_by_teacher(session, user.id)
@@ -236,13 +278,9 @@ async def process_sub_prev(callback: CallbackQuery, state: FSMContext):
     if index > 0:
         await state.update_data(submission_index=index - 1)
     await callback.answer()
-    # Need to refresh message; we'll edit? Simpler: answer and call show_submission again.
-    # We'll delete previous and send new? For now just answer and let user resend command? We'll do a hack.
     await callback.message.answer("Загружаю предыдущую сдачу...")
-    # We'll just trigger show_submission by sending a fake message? Better to edit.
-    # For simplicity, we'll just answer and let user use buttons again.
-    # We'll implement a proper edit later due to time.
-    await show_submission(callback.message, state, None)  # session not available; we'll skip for now.
+    async with async_session() as session:
+        await show_submission(callback.message, state, session)
 
 @router.callback_query(F.data.startswith("sub_next:"))
 async def process_sub_next(callback: CallbackQuery, state: FSMContext):
@@ -253,7 +291,8 @@ async def process_sub_next(callback: CallbackQuery, state: FSMContext):
         await state.update_data(submission_index=index + 1)
     await callback.answer()
     await callback.message.answer("Загружаю следующую сдачу...")
-    await show_submission(callback.message, state, None)
+    async with async_session() as session:
+        await show_submission(callback.message, state, session)
 
 @router.callback_query(F.data == "sub_close")
 async def process_sub_close(callback: CallbackQuery, state: FSMContext):
@@ -340,6 +379,53 @@ async def process_sub_download_all(callback: CallbackQuery, state: FSMContext):
         if len(files) > 5:
             await callback.message.answer(f"И ещё {len(files)-5} файлов (ограничение отображения).")
         await callback.answer("Файлы отправлены")
+
+@router.message(Command("delete_assignment"))
+async def cmd_delete_assignment(message: Message, state: FSMContext):
+    async with async_session() as session:
+        user = await get_user(session, message.from_user.id)
+        if not user or user.role.value not in ("teacher", "admin"):
+            await message.answer("Только преподаватели и администраторы могут удалять задания.")
+            return
+        assignments = await get_assignments_by_teacher(session, user.id)
+        if not assignments:
+            await message.answer("У вас нет заданий для удаления.")
+            return
+        # Build inline keyboard
+        builder = InlineKeyboardBuilder()
+        for a in assignments:
+            builder.button(text=f"{a.title} (ID:{a.id})", callback_data=f"delassign_{a.id}")
+        builder.adjust(1)
+        await message.answer(
+            "Выберите задание для удаления:",
+            reply_markup=builder.as_markup()
+        )
+        await state.set_state(DeleteAssignment.waiting_for_confirmation)
+
+@router.callback_query(F.data.startswith("delassign_"), DeleteAssignment.waiting_for_confirmation)
+async def process_delete_assignment(callback: CallbackQuery, state: FSMContext):
+    assignment_id = int(callback.data.split("_")[1])
+    async with async_session() as session:
+        user = await get_user(session, callback.from_user.id)
+        if not user or user.role.value not in ("teacher", "admin"):
+            await callback.answer("Доступ запрещён.", show_alert=True)
+            return
+        # Verify ownership (teacher created it or is admin)
+        assignment = await get_assignment_by_id(session, assignment_id)
+        if not assignment:
+            await callback.answer("Задание не найдено.", show_alert=True)
+            return
+        if user.role.value != "admin":
+            # Check if teacher owns the group
+            from services.group import get_group_by_id
+            group = await get_group_by_id(session, assignment.group_id)
+            if not group or group.teacher_id != user.id:
+                await callback.answer("У вас нет прав на удаление этого задания.", show_alert=True)
+                return
+        await delete_assignment(session, assignment_id)
+    await callback.message.edit_text(f"Задание с ID {assignment_id} удалено.")
+    await state.clear()
+    await callback.answer()
 
 def register_handlers(dp):
     dp.include_router(router)

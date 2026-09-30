@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta
-from sqlalchemy import select, desc, update
+from sqlalchemy import select, desc, update, delete
 from sqlalchemy.ext.asyncio import AsyncSession
-from database.models import Assignment, User, GroupMember, Submission, SubmissionFile
+from database.models import Assignment, User, GroupMember, Submission, SubmissionFile, Reminder, Group
 
 async def create_assignment(session: AsyncSession, group_id: int, title: str, description: str, file_id: str | None, deadline: datetime, allow_late: bool, created_by: int):
     assignment = Assignment(
@@ -64,4 +64,20 @@ async def update_submission_status_and_comment(session: AsyncSession, submission
         .where(Submission.id == submission_id)
         .values(status=status, teacher_comment=comment)
     )
+    await session.commit()
+
+async def delete_assignment(session: AsyncSession, assignment_id: int):
+    """Delete an assignment and all related data (submissions, files, reminders)."""
+    # Delete reminders for this assignment
+    await session.execute(delete(Reminder).where(Reminder.assignment_id == assignment_id))
+    # Delete submission files for submissions in this assignment
+    await session.execute(
+        delete(SubmissionFile).where(SubmissionFile.submission_id.in_(
+            select(Submission.id).where(Submission.assignment_id == assignment_id)
+        ))
+    )
+    # Delete submissions for this assignment
+    await session.execute(delete(Submission).where(Submission.assignment_id == assignment_id))
+    # Delete the assignment itself
+    await session.execute(delete(Assignment).where(Assignment.id == assignment_id))
     await session.commit()

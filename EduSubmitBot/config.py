@@ -33,5 +33,8 @@ class Config:
         # Ensure storage directory exists
         os.makedirs(self.storage_path, exist_ok=True)
 
+        # Notify teacher when student submits assignment
+        self.notify_teacher_on_submit = os.getenv('NOTIFY_TEACHER_ON_SUBMIT', 'true').lower() in ('true', '1', 'yes')
+
 def load_config():
     return Config()
