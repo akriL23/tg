@@ -1,9 +1,14 @@
-from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey, Text, BigInteger
+from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey, Text, BigInteger, Enum
 from sqlalchemy.orm import relationship
 from sqlalchemy.ext.declarative import declarative_base
 import datetime
 
 Base = declarative_base()
+
+class UserRole(Enum):
+    ADMIN = "admin"
+    TEACHER = "teacher"
+    STUDENT = "student"
 
 class User(Base):
     __tablename__ = 'users'
@@ -11,7 +16,7 @@ class User(Base):
     telegram_id = Column(BigInteger, unique=True, index=True)
     full_name = Column(String)
     username = Column(String)
-    role = Column(String)  # admin, teacher, student
+    role = Column(Enum(UserRole), default=UserRole.STUDENT)
     timezone = Column(String, default='UTC')
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
