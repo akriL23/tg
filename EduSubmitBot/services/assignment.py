@@ -1,5 +1,5 @@
 from datetime import datetime, timedelta
-from sqlalchemy import select, desc
+from sqlalchemy import select, desc, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from database.models import Assignment, User, GroupMember, Submission, SubmissionFile
 
@@ -57,3 +57,11 @@ async def get_submission_files(session: AsyncSession, submission_id: int):
         .order_by(SubmissionFile.version)
     )
     return result.scalars().all()
+
+async def update_submission_status_and_comment(session: AsyncSession, submission_id: int, status: str, comment: str | None):
+    await session.execute(
+        update(Submission)
+        .where(Submission.id == submission_id)
+        .values(status=status, teacher_comment=comment)
+    )
+    await session.commit()
