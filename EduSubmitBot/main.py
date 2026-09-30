@@ -6,6 +6,7 @@ from config import load_config
 from handlers.setup import setup_handlers
 from database.db import init_db
 from scheduler import init_scheduler, shutdown_scheduler
+from middlewares.error_handler import ErrorHandlerMiddleware
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -15,6 +16,10 @@ async def main():
     bot = Bot(token=config.bot_token)
     storage = MemoryStorage()
     dp = Dispatcher(storage=storage)
+
+    # Add error handler middleware
+    dp.message.middleware(ErrorHandlerMiddleware())
+    dp.callback_query.middleware(ErrorHandlerMiddleware())
 
     # Initialize database
     await init_db()
